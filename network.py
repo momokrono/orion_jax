@@ -67,11 +67,11 @@ class ResidualBlock(nnx.Module):
 
     def __call__(self, x: jnp.ndarray, run: bool = True) -> jnp.ndarray:
         residual = self.shortcut(x)
-        x = jax.nn.mish(self.bn1(self.conv1(x), use_running_average=run)).astype(self.compute_dtype)
+        x = nnx.swish(self.bn1(self.conv1(x), use_running_average=run)).astype(self.compute_dtype)
         x = self.bn2(self.conv2(x), use_running_average=run)
         x = self.coord_att(x, run=run)
         x += residual
-        return jax.nn.mish(x).astype(self.compute_dtype)
+        return nnx.swish(x).astype(self.compute_dtype)
 
 
 class PixelShuffle(nnx.Module):
