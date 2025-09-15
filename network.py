@@ -170,7 +170,6 @@ class ViTLayer(nnx.Module):
         super().__init__()
         self.compute_dtype = compute_dtype
 
-        # Multi-head Self-Attention
         self.mhsa = nnx.MultiHeadAttention(
             num_heads=num_heads,
             in_features=embed_dim,
@@ -182,7 +181,6 @@ class ViTLayer(nnx.Module):
         )
         self.ln1 = nnx.LayerNorm(embed_dim, dtype=compute_dtype, rngs=rngs)
 
-        # MLP
         mlp_hidden = embed_dim * 4
         self.mlp = nnx.Sequential(
             nnx.Linear(embed_dim, mlp_hidden, dtype=compute_dtype, rngs=rngs),
@@ -213,6 +211,7 @@ class HybridBottleneck(nnx.Module):
         self.spatial_size = spatial_size
         self.compute_dtype = compute_dtype
         self.layers = []
+        self.scale_layers = []
 
         # Learnable 2D positional embeddings — shape [1, H, W, C]
         pos_embed_shape = (1, spatial_size, spatial_size, channels)
@@ -232,29 +231,30 @@ class HybridBottleneck(nnx.Module):
                 compute_dtype=compute_dtype,
                 rngs=rngs
             )
-            self.layers.append((vit_layer, conv_block))
+            # Scaling
+            scale = nnx.Param(jnp.ones(channels, dtype=compute_dtype) * 0.1)
+            self.layers.append((vit_layer, conv_block, scale))
 
     def __call__(self, x: jnp.ndarray, run: bool = True) -> jnp.ndarray:
         N, H, W, C = x.shape
         assert H == self.spatial_size and W == self.spatial_size, f"Expected {self.spatial_size}x{self.spatial_size}, got {H}x{W}"
 
-        # Add positional embeddings — BROADCASTS to [N, H, W, C]
+        x_in = x
+
         x = x + self.pos_embed.value
 
-        # Pass through hybrid layers: ViT → ResidualBlock
-        for vit_layer, conv_block in self.layers:
-            # --- ViT Path ---
+        for vit_layer, conv_block, scale in self.layers:
             x_flat = x.reshape(N, H * W, C)  # [N, L, C], flattened
             x_vit = vit_layer(x_flat, run=run)
             x_vit = x_vit.reshape(N, H, W, C)  # back to spatial
-            x = x + x_vit  # residual
+            x = x + x_vit * scale  # residual
 
-            # --- Conv Path ---
             x_conv = conv_block(x, run=run)
             x = x + x_conv
 
-        return x.astype(self.compute_dtype)
+        x = x + x_in
 
+        return x.astype(self.compute_dtype)
 
 
 class Orion(nnx.Module):
