@@ -6,16 +6,20 @@ import random
 import cv2
 import time
 import traceback
+from typing import Tuple, List, Dict, Any
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.get_logger().setLevel('ERROR')
 
 # Ensure TF does not allocate GPU memory greedily if JAX is using the GPU
 tf.config.set_visible_devices([], 'GPU')
 
-def load_images_to_memory_v3(data_dir, patch_size):
+
+def load_images_to_memory(data_dir: str, patch_size: int) -> Tuple[List[tf.Tensor], List[tf.Tensor]]:
     """Loads original and starless image pairs using tifffile or cv2."""
     original_dir = os.path.join(data_dir, "original")
     starless_dir = os.path.join(data_dir, "starless")
+
     try:
         all_files = os.listdir(original_dir)
         image_fnames = sorted([
@@ -29,7 +33,7 @@ def load_images_to_memory_v3(data_dir, patch_size):
         raise ValueError(f"Original directory not found: {original_dir}")
 
     if not image_fnames:
-         raise ValueError(f"No compatible images found in {original_dir}")
+        raise ValueError(f"No compatible images found in {original_dir}")
 
     original_images = []
     starless_images = []
@@ -93,28 +97,27 @@ def load_images_to_memory_v3(data_dir, patch_size):
     return original_list, starless_list
 
 
-def random_crop_numpy(orig_img_np, starless_img_np, patch_size):
-    """Selects random coordinates and extracts a patch using NumPy slicing."""
-    h, w = orig_img_np.shape[0], orig_img_np.shape[1]
-    # Ensure cropping is possible (should be checked during loading now)
-    if h < patch_size or w < patch_size:
-        # This case should ideally be filtered out during loading
-        # In case we missed it, raise error
-        raise ValueError(f"Image shape {orig_img_np.shape[:2]} is smaller than patch size {patch_size} during crop.")
+@tf.function
+def random_crop_sync(orig_img: tf.Tensor, starless_img: tf.Tensor, patch_size: int) -> Tuple[tf.Tensor, tf.Tensor]:
+    """Synchronously crop both images to patch size using TensorFlow operations."""
+    img_shape = tf.shape(orig_img)
+    h, w = img_shape[0], img_shape[1]
 
     max_y = h - patch_size
     max_x = w - patch_size
-    y = random.randint(0, max_y)
-    x = random.randint(0, max_x)
 
-    orig_patch = orig_img_np[y:y+patch_size, x:x+patch_size, :]
-    starless_patch = starless_img_np[y:y+patch_size, x:x+patch_size, :]
+    y = tf.random.uniform([], 0, max_y + 1, dtype=tf.int32)
+    x = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
+
+    orig_patch = orig_img[y:y + patch_size, x:x + patch_size, :]
+    starless_patch = starless_img[y:y + patch_size, x:x + patch_size, :]
 
     return orig_patch, starless_patch
 
 
 @tf.function
-def augment_patches_v5(orig_patch, starless_patch, config):
+def augment_patches_v6(orig_patch: tf.Tensor, starless_patch: tf.Tensor, config: Dict[str, Any]) -> Tuple[
+    tf.Tensor, tf.Tensor]:
     """Applies synchronized geometric and color augmentations to patches."""
     aug_prob = config['augmentation_prob']
 
@@ -136,50 +139,46 @@ def augment_patches_v5(orig_patch, starless_patch, config):
         orig_patch = tf.image.rot90(orig_patch, k=k)
         starless_patch = tf.image.rot90(starless_patch, k=k)
 
-    # apply_color = config['apply_color_augmentations']
-    # # --- 2. Synchronized Color/Intensity Augmentations (Optional) ---
-    # if apply_color:
-    #     # Apply same random decision to both images for color augmentations
-    #     apply_color_aug_group = tf.random.uniform(()) < aug_prob
-    #
-    #     if apply_color_aug_group:
-    #         # Brightness
-    #         delta_b = tf.random.uniform((), minval=-0.15, maxval=0.15)
-    #         orig_patch = tf.image.adjust_brightness(orig_patch, delta=delta_b)
-    #         starless_patch = tf.image.adjust_brightness(starless_patch, delta=delta_b) # APPLY TO BOTH
-    #
-    #         # Contrast
-    #         cont_factor = tf.random.uniform((), minval=0.85, maxval=1.15)
-    #         orig_patch = tf.image.adjust_contrast(orig_patch, contrast_factor=cont_factor)
-    #         starless_patch = tf.image.adjust_contrast(starless_patch, contrast_factor=cont_factor) # APPLY TO BOTH
-    #
-    #         # Saturation
-    #         sat_factor = tf.random.uniform((), minval=0.8, maxval=1.2)
-    #         orig_patch = tf.image.adjust_saturation(orig_patch, saturation_factor=sat_factor)
-    #         starless_patch = tf.image.adjust_saturation(starless_patch, saturation_factor=sat_factor) # APPLY TO BOTH
-    #
-    #         # Hue
-    #         delta_h = tf.random.uniform((), minval=-0.1, maxval=0.1)
-    #         orig_patch = tf.image.adjust_hue(orig_patch, delta=delta_h)
-    #         starless_patch = tf.image.adjust_hue(starless_patch, delta=delta_h) # APPLY TO BOTH
-    #
-    #         # Clip values after color changes
-    #         orig_patch = tf.clip_by_value(orig_patch, 0.0, 1.0)
-    #         starless_patch = tf.clip_by_value(starless_patch, 0.0, 1.0)
+    # Color augmentations (if enabled)
+    if config.get('apply_color_augmentations', False):
+        # Apply same random decision to both images for color augmentations
+        apply_color_aug_group = tf.random.uniform(()) < aug_prob
 
-    # Ensure final patches are clipped even if color augmentation is off
-    # (though they should be [0,1] already if input was)
+        if apply_color_aug_group:
+            # Brightness
+            delta_b = tf.random.uniform((), minval=-0.15, maxval=0.15)
+            orig_patch = tf.image.adjust_brightness(orig_patch, delta=delta_b)
+            starless_patch = tf.image.adjust_brightness(starless_patch, delta=delta_b)
+
+            # Contrast
+            cont_factor = tf.random.uniform((), minval=0.85, maxval=1.15)
+            orig_patch = tf.image.adjust_contrast(orig_patch, contrast_factor=cont_factor)
+            starless_patch = tf.image.adjust_contrast(starless_patch, contrast_factor=cont_factor)
+
+            # Saturation
+            sat_factor = tf.random.uniform((), minval=0.8, maxval=1.2)
+            orig_patch = tf.image.adjust_saturation(orig_patch, saturation_factor=sat_factor)
+            starless_patch = tf.image.adjust_saturation(starless_patch, saturation_factor=sat_factor)
+
+            # Hue
+            delta_h = tf.random.uniform((), minval=-0.1, maxval=0.1)
+            orig_patch = tf.image.adjust_hue(orig_patch, delta=delta_h)
+            starless_patch = tf.image.adjust_hue(starless_patch, delta=delta_h)
+
+            orig_patch = tf.clip_by_value(orig_patch, 0.0, 1.0)
+            starless_patch = tf.clip_by_value(starless_patch, 0.0, 1.0)
+
     orig_patch = tf.clip_by_value(orig_patch, 0.0, 1.0)
     starless_patch = tf.clip_by_value(starless_patch, 0.0, 1.0)
 
     return orig_patch, starless_patch
 
 
-def create_dataset_v5(config):
-    """Uses generator -> py_function crop -> map(augmentations)."""
-    print("--- Creating Dataset v5 (NumPy crop + Synced Augs) ---")
+def create_dataset(config):
+    """Dataset definition, using TensorFlow operations for image cropping and augmentation."""
+    print("--- Creating Dataset ---")
     load_start = time.time()
-    original_images, starless_images = load_images_to_memory_v3(config['data_dir'], config['patch_size'])
+    original_images, starless_images = load_images_to_memory(config['data_dir'], config['patch_size'])
     print(f"*** Time to load images into memory: {time.time() - load_start:.2f} seconds ***")
     num_images = len(original_images)
     if num_images == 0: raise ValueError("No image pairs loaded.")
@@ -199,22 +198,13 @@ def create_dataset_v5(config):
     )
 
     @tf.function
-    def map_crop_and_augment(orig_full, starless_full):
-        orig_patch_np, starless_patch_np = tf.py_function(
-            func=random_crop_numpy,
-            inp=[orig_full, starless_full, patch_size],
-            Tout=[tf.float32, tf.float32]
-        )
-
-        orig_patch_np.set_shape([patch_size, patch_size, 3])
-        starless_patch_np.set_shape([patch_size, patch_size, 3])
-
-        orig_aug, starless_aug = augment_patches_v5(orig_patch_np, starless_patch_np, config)
-
+    def map_crop_and_augment(orig_full, starless_full, patch_size, config):
+        orig_patch, starless_patch = random_crop_sync(orig_full, starless_full, patch_size)
+        orig_aug, starless_aug = augment_patches_v6(orig_patch, starless_patch, config)
         return orig_aug, starless_aug
 
     dataset = dataset.map(
-        map_crop_and_augment,
+        lambda orig, starless: map_crop_and_augment(orig, starless, patch_size, config),
         num_parallel_calls=tf.data.AUTOTUNE,
     )
 
@@ -257,7 +247,7 @@ if __name__ == '__main__':
     config["data_dir"] = "./data"
 
     config["steps_per_epoch"] = 100
-    config["apply_color_augmentations"] = False # Or True to test with them
+    config["apply_color_augmentations"] = True
 
     if config["data_dir"] == DUMMY_DATA_DIR and \
        (not os.path.exists(DUMMY_DATA_DIR) or \
@@ -285,7 +275,7 @@ if __name__ == '__main__':
     print(f"Color augmentations: {'ON' if config['apply_color_augmentations'] else 'OFF'}")
     print("Creating tf.data dataset...")
 
-    tf_dataset = create_dataset_v5(config)
+    tf_dataset = create_dataset(config)
     print("Dataset created.")
 
     print("\nTiming batch iteration...")
@@ -304,7 +294,7 @@ if __name__ == '__main__':
     except Exception as e: print(f"Error first batch: {e}"); traceback.print_exc(); exit()
 
     # ... Time subsequent batches ...
-    num_batches_to_time = min(config.get('batches_per_epoch', 100) -1, 10)
+    num_batches_to_time = min(config.get('batches_per_epoch', 100) -1, 1000)
     total_time = 0
     actual_batches_timed = 0
     if num_batches_to_time > 0:
@@ -324,3 +314,14 @@ if __name__ == '__main__':
     else: print("\nOnly 1 batch in dataset.")
 
     print("\nDataset pipeline ready.")
+
+    # Sometimes the code doesn't exit, since the pre-fetching threads of the dataset are still running.
+    try:
+        import gc
+        del iterator
+        del tf_dataset
+        tf.keras.backend.clear_session()
+        gc.collect()
+    except:
+        pass
+    print("\nExiting.")

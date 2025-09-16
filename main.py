@@ -3,7 +3,7 @@ import random
 import cv2
 from functools import partial
 from utils import plot_images
-from dataset import create_dataset_v5
+from dataset import create_dataset
 from network import Orion
 from tqdm import tqdm
 import jax
@@ -37,7 +37,7 @@ config = {
 
 def main():
     print("Initializing dataset...")
-    dataset = create_dataset_v5(config)
+    dataset = create_dataset(config)
 
     print("Initializing model...")
     model = Orion(in_channels=3, bottleneck_depth=2, rngs=nnx.Rngs(0))
