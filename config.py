@@ -10,11 +10,11 @@ def get_default_config() -> Dict[str, Any]:
         "data_dir": "./data",
         "val_data_dir": "./data",  # Separate validation data dir; defaults to data_dir
         "patch_size": 256,
-        "batch_size": 16,
+        "batch_size": 8,  # Fits a 12 GB GPU in bf16; raise on larger cards
         "steps_per_epoch": 250,
         "val_steps": 50,
         "val_split": 0.1,  # Fraction of images held out for validation (when val_data_dir == data_dir)
-        "augmentation_prob": 0.5,
+        "augmentation_prob": 0.5,  # Per-patch probability of photometric (gamma/brightness) jitter; D4 orientation aug is always on for train
         "prefetch": 2,
 
         # Model parameters
@@ -37,6 +37,10 @@ def get_default_config() -> Dict[str, Any]:
 
         # Loss configuration (Charbonnier + SSIM)
         "loss_weights": {"charbonnier": 1.0, "ssim": 1.0},
+
+        # Precision: 'bf16' (mixed-precision compute, faster, less GPU memory)
+        # or 'fp32'. Master weights / optimizer state stay fp32 either way.
+        "precision": "bf16",
 
         # Optimization
         "grad_clip": 1.0,          # Global gradient clipping norm (None to disable)

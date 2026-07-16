@@ -86,11 +86,11 @@ The network (see `network.py`):
 | Key | Default | Notes |
 |---|---|---|
 | `patch_size` | 256 | random crop size |
-| `batch_size` | 16 | |
+| `batch_size` | 8 | fits a 12 GB GPU in bf16; raise on larger cards |
 | `steps_per_epoch` | 250 | |
 | `val_steps` | 50 | |
 | `val_split` | 0.1 | image‑level train/val split (last 10% held out) when `val_data_dir == data_dir` |
-| `augmentation_prob` | 0.5 | per‑transform probability (flip / rotate; color aug off by default) |
+| `augmentation_prob` | 0.5 | per‑patch probability of photometric (gamma/brightness) jitter; D4 orientation aug is always on for train |
 | `epochs` | 10 | |
 | `lr` / `starting_lr` | 1e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
 | `warmup_epochs` | 1 | |
@@ -100,6 +100,7 @@ The network (see `network.py`):
 | `stochastic_depth_rate` | 0.05 | DropPath in bottleneck (linearly scaled per layer) |
 | `conv_dropout_rate` | 0.05 | dropout in `NAFBlock`s |
 | `loss_weights` | `{"charbonnier": 1.0, "ssim": 1.0}` | weights for the two loss terms |
+| `precision` | `"bf16"` | `"bf16"` (mixed‑precision compute, faster, less VRAM) or `"fp32"` |
 | `grad_clip` | 1.0 | global gradient‑norm clip (set to `None` to disable) |
 | `eval_every` | 2 | log train metrics every N steps |
 | `visualize_every` / `plot_every` | 5 / 5 | training‑curves / sample‑prediction period (epochs) |
@@ -115,13 +116,13 @@ Loss (`loss_functions.py`):
 `dataset.py` is pure numpy/cv2:
 - All compatible pairs are loaded into host memory once as float32 in [0, 1]
 - Each step samples an image (area‑weighted), a random crop, and optional augmentation
-- Augmentation: horizontal/vertical flips, 90/180/270° rotations; `apply_color_augmentations=True` adds brightness/contrast/saturation/hue jitter (off by default)
+- Augmentation: a uniformly random D4 orientation (all 8 dihedral orientations) is always applied during training; `augmentation_prob` additionally controls per‑patch gamma/brightness photometric jitter (applied identically to input and target, so the mapping stays consistent)
 - A background thread double‑buffers batches (`prefetch=2`) so the GPU is never starved
 - Validation uses a deterministic seed per dataset, so val metrics are comparable across epochs and runs
 
 
 ## Notes, tips, and troubleshooting
-- Mixed precision: compute dtypes are passed per‑module (default: float32). You can experiment with `jnp.bfloat16` by passing `compute_dtype` into the model construction.
+- Mixed precision: training defaults to bf16 compute (`precision: "bf16"`) for speed and lower VRAM; pass `--precision fp32` for full precision. Some parameters (e.g. LayerNorm) are kept in float32 automatically.
 - Learning rate: warmup‑cosine decay over `epochs * steps_per_epoch`, peaking at `lr` after `warmup_epochs`, decaying back to `starting_lr`. Requires `epochs > warmup_epochs`.
 - Checkpoint resume: on by default. Use a unique `--name` per configuration when comparing, or pass `--no-resume` to start fresh into the same dir.
 - Dataset quality: for best results provide carefully aligned pairs (original vs starless) with identical filenames and shapes.

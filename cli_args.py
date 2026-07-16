@@ -61,6 +61,9 @@ def parse_training_args(argv=None) -> argparse.Namespace:
                         help="Number of HybridLayer blocks in the bottleneck.")
     parser.add_argument("--naf-expansion", type=int, default=None,
                         help="Channel expansion in NAFNet blocks (default 2).")
+    parser.add_argument("--precision", type=str, default=None,
+                        choices=["bf16", "fp32"],
+                        help="Compute precision: 'bf16' (default) or 'fp32'.")
 
     # Logging and visualization
     parser.add_argument("--eval-every", type=int, default=None,
@@ -94,7 +97,7 @@ def apply_args_to_config(args, config):
         'eval_every', 'visualize_every', 'plot_every', 'epoch_checkpoints',
     ]
     _FLOAT_KEYS = ['lr', 'starting_lr', 'augmentation_prob']
-    _STR_KEYS = ['data_dir']
+    _STR_KEYS = ['data_dir', 'precision']
 
     for k in _INT_KEYS:
         v = getattr(args, k, None)

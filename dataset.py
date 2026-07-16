@@ -124,7 +124,6 @@ class AstroDataset:
         self.patch_size = int(config['patch_size'])
         self.batch_size = int(config['batch_size'])
         self.augmentation_prob = float(config.get('augmentation_prob', 0.0))
-        self.apply_color_aug = bool(config.get('apply_color_augmentations', False))
         self.prefetch = int(config.get('prefetch', 2))
         self.is_validation = (split == 'val')
         # Deterministic, reproducible crops for validation; fresh stream for train.
@@ -152,58 +151,45 @@ class AstroDataset:
 
     def _augment(self, orig: np.ndarray, star: np.ndarray,
                  rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
-        prob = self.augmentation_prob
-        if prob <= 0.0:
+        """Apply geometric (D4) and photometric augmentation.
+
+        - Geometric: a uniformly random dihedral orientation (all 8 of the D4
+          group: 4 rotations x optional flip). Always applied during training
+          for maximum orientation diversity. When ``augmentation_prob == 0``
+          (validation), nothing is applied.
+        - Photometric: gamma + brightness jitter, gated per-patch by
+          ``augmentation_prob``. Applied identically to orig and star so the
+          input->target mapping stays consistent.
+        """
+        if self.augmentation_prob <= 0.0:
             return orig, star
 
-        if rng.random() < prob:
+        # Geometric: uniform random D4 orientation.
+        k = int(rng.randint(0, 4))
+        if rng.random() < 0.5:
             orig = np.ascontiguousarray(np.flip(orig, axis=1))
             star = np.ascontiguousarray(np.flip(star, axis=1))
-        if rng.random() < prob:
-            orig = np.ascontiguousarray(np.flip(orig, axis=0))
-            star = np.ascontiguousarray(np.flip(star, axis=0))
-        if rng.random() < prob:
-            k = int(rng.randint(1, 4))
+        if k:
             orig = np.ascontiguousarray(np.rot90(orig, k))
             star = np.ascontiguousarray(np.rot90(star, k))
 
-        if self.apply_color_aug and rng.random() < prob:
-            orig, star = self._color_augment(orig, star, rng)
+        # Photometric (gamma/brightness) jitter.
+        if rng.random() < self.augmentation_prob:
+            orig, star = self._photometric(orig, star, rng)
 
         return np.clip(orig, 0.0, 1.0), np.clip(star, 0.0, 1.0)
 
     @staticmethod
-    def _color_augment(orig: np.ndarray, star: np.ndarray,
-                       rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
-        # Brightness (same delta on both, to keep the input/target mapping consistent)
-        db = rng.uniform(-0.15, 0.15)
-        orig = np.clip(orig + db, 0.0, 1.0)
-        star = np.clip(star + db, 0.0, 1.0)
-        # Contrast around per-image mean
-        cf = rng.uniform(0.85, 1.15)
-        orig = np.clip((orig - orig.mean()) * cf + orig.mean(), 0.0, 1.0)
-        star = np.clip((star - star.mean()) * cf + star.mean(), 0.0, 1.0)
-        # Saturation toward luminance
-        sf = rng.uniform(0.8, 1.2)
-        orig = AstroDataset._adjust_saturation(orig, sf)
-        star = AstroDataset._adjust_saturation(star, sf)
-        # Hue (OpenCV HSV, delta in degrees mapped to OpenCV's [0,180) range)
-        dh = rng.uniform(-0.1, 0.1)
-        orig = AstroDataset._adjust_hue(orig, dh)
-        star = AstroDataset._adjust_hue(star, dh)
+    def _photometric(orig: np.ndarray, star: np.ndarray,
+                     rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
+        # Gamma: log-uniform stretch around 1.0 (~0.66 .. 1.52). Natural for
+        # astrophotography, which spans a huge dynamic range across stretches.
+        gamma = float(2.0 ** rng.uniform(-0.6, 0.6))
+        # Multiplicative brightness: simulates varying exposure levels.
+        brightness = float(rng.uniform(0.9, 1.1))
+        orig = np.clip(orig ** gamma * brightness, 0.0, 1.0).astype(np.float32)
+        star = np.clip(star ** gamma * brightness, 0.0, 1.0).astype(np.float32)
         return orig, star
-
-    @staticmethod
-    def _adjust_saturation(img: np.ndarray, factor: float) -> np.ndarray:
-        gray = np.mean(img, axis=-1, keepdims=True)
-        return np.clip(img * factor + gray * (1.0 - factor), 0.0, 1.0)
-
-    @staticmethod
-    def _adjust_hue(img: np.ndarray, delta: float) -> np.ndarray:
-        u8 = (img * 255.0).astype(np.uint8)
-        hsv = cv2.cvtColor(u8, cv2.COLOR_RGB2HSV).astype(np.int16)
-        hsv[..., 0] = (hsv[..., 0] + int(delta * 180)) % 180
-        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
 
     def _build_batch(self, rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
         p = self.patch_size

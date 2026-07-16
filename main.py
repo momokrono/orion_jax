@@ -18,6 +18,7 @@ Compare runs afterwards with ``python compare_runs.py runs/baseline runs/exp``.
 import json
 from pathlib import Path
 
+import jax.numpy as jnp
 import optax
 from flax import nnx
 from tqdm import tqdm
@@ -141,9 +142,12 @@ def main():
     val_dataset = create_validation_dataset(config)
 
     print("Initializing model...")
+    compute_dtype = jnp.bfloat16 if config.get('precision', 'fp32') == 'bf16' else jnp.float32
+    print(f"Compute dtype: {compute_dtype}")
     model = Orion(
         in_channels=config['in_channels'],
         bottleneck_depth=config['bottleneck_depth'],
+        compute_dtype=compute_dtype,
         rngs=nnx.Rngs(0),
         vit_mlp_dropout_rate=config.get('vit_mlp_dropout_rate', 0.1),
         attn_dropout_rate=config.get('attn_dropout_rate', 0.0),
