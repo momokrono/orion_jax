@@ -30,13 +30,21 @@ def get_default_config() -> Dict[str, Any]:
 
         # Training parameters
         "epochs": 10,
-        "lr": 1e-4,
+        "lr": 5e-4,
         "starting_lr": 1e-6,
         "warmup_epochs": 1,
         "momentum": 0.9,
 
-        # Loss configuration (Charbonnier + SSIM)
-        "loss_weights": {"charbonnier": 1.0, "ssim": 1.0},
+        # Loss configuration (weighted sum; see loss_functions.LOSS_FUNCTIONS).
+        # log_charbonnier + gradient + frequency specifically strengthen the
+        # signal on faint/low-contrast stars that plain pixel losses ignore.
+        "loss_weights": {
+            "charbonnier": 1.0,       # robust pixel reconstruction (linear)
+            "log_charbonnier": 1.0,   # log-space reconstruction — boosts faint stars
+            "ssim": 1.0,             # structural similarity
+            "gradient": 1.0,         # edge/structure preservation (star spikes)
+            "frequency": 0.3,        # residual point-source (high-freq) penalty
+        },
 
         # Precision: 'bf16' (mixed-precision compute, faster, less GPU memory)
         # or 'fp32'. Master weights / optimizer state stay fp32 either way.
@@ -88,6 +96,13 @@ def validate_config(config: Dict[str, Any]) -> None:
 
     if not config.get("loss_weights"):
         raise ValueError("loss_weights must be a non-empty dict (e.g. {'charbonnier': 1.0, 'ssim': 1.0})")
+
+    from loss_functions import LOSS_FUNCTIONS
+    unknown = [k for k in config["loss_weights"] if k not in LOSS_FUNCTIONS]
+    if unknown:
+        raise ValueError(
+            f"Unknown loss_weights keys {unknown}. Valid: {sorted(LOSS_FUNCTIONS)}"
+        )
 
     val_split = config.get('val_split', 0.0)
     if not (0.0 <= val_split < 1.0):

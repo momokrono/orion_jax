@@ -7,7 +7,7 @@ Highlights
 - U‑Net encoder–decoder built from NAFNet blocks (LayerNorm + SimpleGate, no BatchNorm)
 - Hybrid ViT‑conv bottleneck with learned positional embeddings and stochastic depth
 - PixelShuffle upsampling; SE (Squeeze‑Excitation) skip gates
-- Charbonnier + SSIM loss
+- Multi‑component loss (Charbonnier, log‑Charbonnier, SSIM, gradient, frequency)
 - Per‑run output directory with checkpointing, persisted metrics history, and a side‑by‑side run comparison script
 
 
@@ -92,14 +92,14 @@ The network (see `network.py`):
 | `val_split` | 0.1 | image‑level train/val split (last 10% held out) when `val_data_dir == data_dir` |
 | `augmentation_prob` | 0.5 | per‑patch probability of photometric (gamma/brightness) jitter; D4 orientation aug is always on for train |
 | `epochs` | 10 | |
-| `lr` / `starting_lr` | 1e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
+| `lr` / `starting_lr` | 5e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
 | `warmup_epochs` | 1 | |
 | `bottleneck_depth` | 2 | number of `HybridLayer`s in the bottleneck |
 | `naf_expansion` | 2 | hidden‑channel multiplier in `NAFBlock` |
 | `vit_mlp_dropout_rate` | 0.1 | dropout in ViT MLP |
 | `stochastic_depth_rate` | 0.05 | DropPath in bottleneck (linearly scaled per layer) |
 | `conv_dropout_rate` | 0.05 | dropout in `NAFBlock`s |
-| `loss_weights` | `{"charbonnier": 1.0, "ssim": 1.0}` | weights for the two loss terms |
+| `loss_weights` | see below | per‑component weights for the loss (a subset of the named terms) |
 | `precision` | `"bf16"` | `"bf16"` (mixed‑precision compute, faster, less VRAM) or `"fp32"` |
 | `grad_clip` | 1.0 | global gradient‑norm clip (set to `None` to disable) |
 | `eval_every` | 2 | log train metrics every N steps |
@@ -107,8 +107,14 @@ The network (see `network.py`):
 | `epoch_checkpoints` | 5 | |
 | `runs_root` / `run_name` | `./runs` / `default` | output goes to `runs_root/run_name/` |
 
-Loss (`loss_functions.py`):
-- A weighted sum of **Charbonnier** (robust pixel reconstruction) and **SSIM** (structural similarity). Charbonnier drives pixel accuracy; SSIM preserves large‑scale nebular structure. Adjust the balance via `loss_weights` in the config.
+Loss (`loss_functions.py`) — a weighted sum over any of these terms (set in `loss_weights`; only named terms are computed):
+- `charbonnier` (1.0) — robust pixel reconstruction (linear).
+- `log_charbonnier` (1.0) — Charbonnier in `log(img+floor)` space. Compresses bright stars and amplifies faint ones, so dim/low‑contrast stars get more gradient weight (targets the red‑star‑on‑nebula problem).
+- `ssim` (1.0) — 1 − SSIM, structural similarity.
+- `gradient` (1.0) — L1 on spatial gradients; penalises residual star edges.
+- `frequency` (0.3) — L1 on the log‑magnitude FFT (low/high bands); penalises residual point‑source energy.
+
+Defaults are `{"charbonnier": 1.0, "log_charbonnier": 1.0, "ssim": 1.0, "gradient": 1.0, "frequency": 0.3}`. The components have different natural scales (frequency is large, charbonnier small), so check the per‑component curves in `curves.png` and rebalance weights so no single term dominates. Drop terms you don't want (e.g. `frequency`) by removing the key.
 
 
 ## Data pipeline details
