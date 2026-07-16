@@ -1,12 +1,14 @@
 # Orion JAX — Neural Star Remover (JAX/Flax)
 
-Orion is a neural network that removes stars from deep‑sky astrophotography images, producing a “starless” version that can be used for processing nebulosity and background structures. This repository is a JAX/Flax (nnx) port of an earlier PyTorch implementation.
+Orion is a neural network that removes stars from deep‑sky astrophotography images, producing a "starless" version that can be used for processing nebulosity and background structures. This repository is a JAX/Flax (nnx) port of an earlier PyTorch implementation.
 
 Highlights
-- JAX/Flax (nnx) implementation with jit-compiled training/evaluation steps
-- U‑Net‑like encoder–decoder with residual blocks and Coordinate Attention
-- PixelShuffle upsampling for efficient, artifact‑free upscaling
-- Simple TF‑based input pipeline that reads large TIFF/PNG/JPG pairs and yields random crops
+- Pure JAX/Flax (nnx) — no TensorFlow in the data pipeline
+- U‑Net encoder–decoder built from NAFNet blocks (LayerNorm + SimpleGate, no BatchNorm)
+- Hybrid ViT‑conv bottleneck with learned positional embeddings and stochastic depth
+- PixelShuffle upsampling; SE (Squeeze‑Excitation) skip gates
+- Charbonnier + SSIM loss
+- Per‑run output directory with checkpointing, persisted metrics history, and a side‑by‑side run comparison script
 
 
 ## Quick start
@@ -27,7 +29,7 @@ Using pip:
 - `pip install -e .`
 
 2) Prepare your dataset
-Create a directory with paired images. Each image in original/ must have a file with the exact same name in starless/.
+Create a directory with paired images. Each image in `original/` must have a file with the exact same name in `starless/`.
 ```
 Project root
 └── data/
@@ -38,90 +40,113 @@ Project root
         ├── image_0001.tif
         └── image_0002.png
 ```
-Supported formats: .tif, .tiff, .png, .jpg, .jpeg. Images can be 8‑bit, 16‑bit, or float; they are normalized to [0, 1]. Grayscale inputs are broadcast to 3 channels automatically. Images smaller than the configured patch size are skipped.
-
-Note: The loader uses TensorFlow only for the data pipeline (CPU). It explicitly disables TF GPU to avoid conflicts with JAX.
+Supported formats: `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`. Images can be 8‑bit, 16‑bit, or float; they are normalized to [0, 1]. Grayscale inputs are broadcast to 3 channels automatically. Images smaller than the configured patch size are skipped.
 
 3) Train
-- Default config is in main.py (see the config dict). Run:
-
 ```sh
 python main.py
 ```
+This builds the Orion model, creates a dataset of random 256×256 patches from your images, trains with the configured loss using Optax AdamW + warmup‑cosine schedule, and periodically logs metrics and sample predictions.
 
-This will:
-- Build the Orion model
-- Create a dataset of random 256×256 patches from your images
-- Train with a weighted L1+L2 loss (MAE+MSE) using Optax AdamW
-- Periodically log metrics and show example predictions
+Override anything on the command line (see `python main.py --help`):
+```sh
+python main.py --name baseline --epochs 50 --lr 2e-4 --no-show
+python main.py --name deeper --bottleneck-depth 4
+```
+
+Each run writes everything under `<runs_root>/<name>/` (default `./runs/<name>/`):
+- `config.json` — resolved configuration snapshot
+- `history.json` — per‑step train metrics + per‑epoch validation metrics (rewritten every epoch, so a killed run still has data)
+- `curves.png` — last training‑curves figure
+- `sample_epoch_NNN.png` — sample predictions
+- `latest/`, `best/` — Orbax checkpoints (resume is automatic unless `--no-resume` is passed)
+
+4) Compare runs
+```sh
+python compare_runs.py runs/baseline runs/struct          # specific runs
+python compare_runs.py --runs-root runs --pattern '*'     # all runs
+python compare_runs.py runs/baseline --out cmp.png        # save figure, no display
+```
+Overlays validation loss, loss components, and the learning‑rate schedule; prints a final summary table.
 
 
 ## Model overview
 
-The network (see network.py):
-- Encoder: ResidualBlock stacks with BatchNorm and Swish activations
-- Bottleneck: Configurable depth of ResidualBlocks
-- Decoder: PixelShuffle upsampling, skip connections gated via Coordinate Attention
-- Output: A 1×1 convolution predicts a residual which is subtracted from the input (input − residual)
-
-Key components
-- ResidualBlock: Conv → BN → Swish, CoordAttn, with a 1×1 shortcut
-- CoordAttn: Coordinate Attention module adapted for NHWC
-- UpsampleBlock: Conv → PixelShuffle → Swish
+The network (see `network.py`):
+- Encoder: stack of `NAFBlock` (NAFNet residual block — LayerNorm → conv → SimpleGate → SimpleChannelAttention) at 64/128/256/512 channels, with 2×2 average‑pooling between levels
+- Bottleneck: `HybridBottleneck` — alternating `HybridLayer`s that mix a `ViTLayer` (MHSA + Swish‑MLP, with attention/MLP dropout) and a `NAFBlock`, plus learnable 2D positional embeddings and DropPath. Surrounded by a global residual.
+- Decoder: `UpsampleBlock` (conv → PixelShuffle → Swish), skip connections passed through an `SEGate` (Squeeze‑Excitation), concatenated, then another `NAFBlock`
+- Output: a 1×1 convolution predicts a residual that is subtracted from the input (`input − residual`)
 
 
 ## Configuration
-Edit main.py to change training and data parameters. Defaults:
-- patch_size: 256
-- batch_size: 16
-- steps_per_epoch: 250
-- lr: 1e-4 (note: optimizer currently uses a fixed value set near initialization)
-- starting_lr: 1e-6
-- epochs: 10
-- warmup_epochs: 1
-- precision: "bf16"
-- augmentation_prob: 0.5
-- alpha: 100  (L1 weight, not used directly in current loss function)
-- beta: 100   (L2 weight, not used directly in current loss function)
-- T_0: 20, T_mult: 2
-- epoch_visualization: 10
-- epoch_checkpoints: 20
-- data_dir: ./data
-- shuffle_buffer_size: 1000
 
-Loss weights used in the loop (can be edited):
-- l1_loss_weight = 2.0
-- l2_loss_weight = 8.0
+`config.py` is the single source of defaults; command‑line flags override them (see `main.py --help`). Defaults:
 
-Dataset options (dataset.py):
-- Random cropping to patch_size
-- Optional augmentations (flip/rotate, brightness/contrast, color jitter) with probability augmentation_prob
+| Key | Default | Notes |
+|---|---|---|
+| `patch_size` | 256 | random crop size |
+| `batch_size` | 16 | |
+| `steps_per_epoch` | 250 | |
+| `val_steps` | 50 | |
+| `val_split` | 0.1 | image‑level train/val split (last 10% held out) when `val_data_dir == data_dir` |
+| `augmentation_prob` | 0.5 | per‑transform probability (flip / rotate; color aug off by default) |
+| `epochs` | 10 | |
+| `lr` / `starting_lr` | 1e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
+| `warmup_epochs` | 1 | |
+| `bottleneck_depth` | 2 | number of `HybridLayer`s in the bottleneck |
+| `naf_expansion` | 2 | hidden‑channel multiplier in `NAFBlock` |
+| `vit_mlp_dropout_rate` | 0.1 | dropout in ViT MLP |
+| `stochastic_depth_rate` | 0.05 | DropPath in bottleneck (linearly scaled per layer) |
+| `conv_dropout_rate` | 0.05 | dropout in `NAFBlock`s |
+| `loss_weights` | `{"charbonnier": 1.0, "ssim": 1.0}` | weights for the two loss terms |
+| `grad_clip` | 1.0 | global gradient‑norm clip (set to `None` to disable) |
+| `eval_every` | 2 | log train metrics every N steps |
+| `visualize_every` / `plot_every` | 5 / 5 | training‑curves / sample‑prediction period (epochs) |
+| `epoch_checkpoints` | 5 | |
+| `runs_root` / `run_name` | `./runs` / `default` | output goes to `runs_root/run_name/` |
+
+Loss (`loss_functions.py`):
+- A weighted sum of **Charbonnier** (robust pixel reconstruction) and **SSIM** (structural similarity). Charbonnier drives pixel accuracy; SSIM preserves large‑scale nebular structure. Adjust the balance via `loss_weights` in the config.
 
 
 ## Data pipeline details
-- Files are loaded into memory once (only pairs that are at least patch_size on both dimensions)
-- Each training step draws a random crop from a random image pair
-- Normalization: uint8→/255, uint16→/65535, float32/64→as is
-- Grayscale images are replicated to RGB
-- TensorFlow is used to wrap the generator and batch/shuffle efficiently on CPU
+
+`dataset.py` is pure numpy/cv2:
+- All compatible pairs are loaded into host memory once as float32 in [0, 1]
+- Each step samples an image (area‑weighted), a random crop, and optional augmentation
+- Augmentation: horizontal/vertical flips, 90/180/270° rotations; `apply_color_augmentations=True` adds brightness/contrast/saturation/hue jitter (off by default)
+- A background thread double‑buffers batches (`prefetch=2`) so the GPU is never starved
+- Validation uses a deterministic seed per dataset, so val metrics are comparable across epochs and runs
 
 
 ## Notes, tips, and troubleshooting
-- GPU memory: TensorFlow is configured to ignore GPUs to prevent it from claiming the device JAX should use.
-- Mixed precision: precision is set in config, but compute dtypes are passed per-module. You can experiment with jnp.bfloat16 for speed on supported hardware.
-- Learning rate: The optimizer is initialized with a fixed value in main.py (learning_rate = 0.005). Adjust to match config["lr"], or wire a scheduler if desired.
-- Visualizations: The script periodically plots train metrics and shows model outputs on a sample patch. You can set save=True in utils.plot_images to save PNGs per epoch.
-- Dataset quality: For best results, provide carefully aligned pairs (original vs starless) with identical filenames and shapes.
+- Mixed precision: compute dtypes are passed per‑module (default: float32). You can experiment with `jnp.bfloat16` by passing `compute_dtype` into the model construction.
+- Learning rate: warmup‑cosine decay over `epochs * steps_per_epoch`, peaking at `lr` after `warmup_epochs`, decaying back to `starting_lr`. Requires `epochs > warmup_epochs`.
+- Checkpoint resume: on by default. Use a unique `--name` per configuration when comparing, or pass `--no-resume` to start fresh into the same dir.
+- Dataset quality: for best results provide carefully aligned pairs (original vs starless) with identical filenames and shapes.
 
 Common errors
-- ValueError: "No compatible images found" or "No valid image pairs loaded" → Check your data folder structure and file extensions.
-- Shape mismatch for <file> → Ensure originals and starless images have identical width/height and same filename.
-- Image too small for patch size → Reduce config["patch_size"] or remove tiny images.
+- `ValueError: "No compatible images found"` / `"No valid image pairs loaded"` → check your data folder structure and file extensions.
+- `Shape mismatch for <file>` → ensure originals and starless images have identical width/height and the same filename.
+- `Image too small for patch size` → reduce `patch_size` (or `--patch-size`) or remove tiny images.
+- `cosine_decay_schedule requires positive decay_steps` → `epochs == warmup_epochs`; bump epochs or shorten warmup.
 
 
 ## Development
-- devel.ipynb and test.ipynb contain scratch work and small experiments.
-- The code uses Flax nnx APIs which differ from nn.Module/linen; parameters live on the module instances and are updated via nnx.Optimizer.
+- The code uses Flax `nnx` APIs which differ from `nn.Module`/linen: parameters live on the module instances and are updated via `nnx.Optimizer`.
+- Module layout:
+  - `config.py` — default config + validation
+  - `cli_args.py` — `--name`/`--epochs`/... argument parsing, applied on top of `get_default_config()`
+  - `dataset.py` — JAX‑native patch data pipeline
+  - `network.py` — `Orion` model (NAFBlock, HybridBottleneck, SEGate, etc.)
+  - `loss_functions.py` — Charbonnier + SSIM loss
+  - `train.py` — optimizer, metrics, jitted `train_step` / `val_step`
+  - `checkpoint.py` — Orbax‑based save/restore + resume
+  - `metrics_utils.py` — metrics formatting helper
+  - `utils.py` — plotting
+  - `main.py` — training entry point
+  - `compare_runs.py` — side‑by‑side comparison of run histories
 
 
 ## Citation

@@ -4,16 +4,27 @@ version = "0.1.0"
 description = "A NN star remover"
 requires-python = ">=3.13"
 dependencies = [
-    "flax>=0.10.5",
+    "flax>=0.12.7",
     "ipywidgets>=8.1.6",
-    "jax[cuda12]>=0.6.0",
+    "jax[cuda13]>=0.10.2",
     "matplotlib>=3.10.1",
     "notebook>=7.4.0",
-    "numpy>=2.2.5",
-    "opencv-python>=4.11.0.86",
-    "optax>=0.2.4",
-    "orbax-checkpoint>=0.11.12",
+    "numpy>=2.5.1",
+    "opencv-python>=5.0.0.93",
+    "optax>=0.2.8",
+    "orbax-checkpoint>=0.12.1",
     "pillow>=11.2.1",
-    "tifffile>=2025.3.30",
-    "tqdm>=4.67.1",
+    "tifffile>=2026.6.1",
+    "tqdm>=4.68.4",
 ]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# This is a collection of top-level scripts (run via `python main.py`), not an
+# importable package. Disable auto-discovery, which would otherwise try to ship
+# the data/ and checkpoints/ directories as packages.
+py-modules = []
+packages = []
