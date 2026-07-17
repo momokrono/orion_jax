@@ -115,6 +115,40 @@ class CheckpointManager:
         except Exception as e:
             print(f"Could not restore checkpoint: {e}")
             return None
+
+    def restore_model(self, model: nnx.Module,
+                      checkpoint_name: str = 'best') -> nnx.Module:
+        """Restore only the model weights (for inference).
+
+        Reads the ``model`` subtree of the checkpoint directly with orbax,
+        bypassing the optimizer entirely. This avoids needing to reconstruct
+        the exact training-time optimizer (e.g. clip + adamw chain) just to
+        satisfy orbax's structural equality check on ``opt_state``.
+
+        Raises ``FileNotFoundError`` if the named checkpoint does not exist.
+        """
+        checkpoint_path = self.checkpoint_dir / checkpoint_name
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        # Use PyTreeRestoreArgs(partial_restore=True) so orbax only restores
+        # keys we provide (just `model`) and ignores `optimizer` / metadata
+        # on disk. The StandardCheckpointer.restore(target=...) path is strict
+        # and rejects partial targets.
+        _, model_state = nnx.split(model)
+        from orbax.checkpoint._src.handlers.pytree_checkpoint_handler import (
+            PyTreeCheckpointHandler, PyTreeRestoreArgs,
+        )
+        checkpointer = ocp.Checkpointer(PyTreeCheckpointHandler())
+        restored = checkpointer.restore(
+            checkpoint_path,
+            args=PyTreeRestoreArgs(item={'model': model_state},
+                                   partial_restore=True),
+        )
+        if restored is None:
+            raise FileNotFoundError(f"Could not restore: {checkpoint_path}")
+        nnx.update(model, restored['model'])
+        return model
     
     def save_best_model(self,
                        model: nnx.Module,
