@@ -124,10 +124,11 @@ class AstroDataset:
         self.patch_size = int(config['patch_size'])
         self.batch_size = int(config['batch_size'])
         self.augmentation_prob = float(config.get('augmentation_prob', 0.0))
-        # Per-channel photometric jitter strengths. ``gamma_strength`` is the
-        # half-width of a log-uniform stretch (so 0.7 -> 2^U(-0.7,0.7) ~= 0.62..1.62
-        # per channel, drawn independently for R/G/B). ``gain_strength`` is the
-        # half-width of an additive multiplicative gain (0.2 -> U(0.8, 1.2)).
+        # Global photometric jitter strengths. ``gamma_strength`` is the
+        # half-width of a log-uniform stretch (so 0.7 -> 2^U(-0.7,0.7) ~= 0.62..1.62,
+        # applied identically to R/G/B). ``gain_strength`` is the half-width of
+        # an additive multiplicative gain (0.2 -> U(0.8, 1.2), also global).
+        # Both are channel-coupled — see _photometric for the rationale.
         self.gamma_strength = float(config.get('photo_gamma_strength', 0.7))
         self.gain_strength = float(config.get('photo_gain_strength', 0.2))
         self.prefetch = int(config.get('prefetch', 2))
@@ -192,23 +193,23 @@ class AstroDataset:
                      rng: np.random.RandomState,
                      gamma_strength: float, gain_strength: float
                      ) -> Tuple[np.ndarray, np.ndarray]:
-        # Per-channel photometric jitter, applied identically to orig and star
+        # Global photometric jitter, applied identically to orig and star
         # (same realization) so the input->target mapping stays consistent.
         #
-        # Independently perturbing R, G, B simulates colour-balance / sensor
-        # response variation, which breaks channel-specific memorisation on a
-        # 4-image dataset. Doing it per-channel (vs the previous single global
-        # gamma) is the main lever for closing the train->val gap on the
-        # frequency loss, which otherwise memorises specific star fields.
+        # NOTE: gamma and gain are GLOBAL (same value across R/G/B), not
+        # per-channel. Astrophotography colour is semantically meaningful —
+        # H-alpha is red, O-III blue-green, S-II deep red — and per-channel
+        # gamma was found to hurt held-out quality (~-2.3 dB PSNR) by
+        # distorting the spectral signature the model uses to tell emission
+        # nebulosity apart from stars. Keep the photometric transform channel-
+        # coupled unless you have a reason to break spectral cues.
         #
-        # gamma: log-uniform stretch per channel, 2^U(-g, g).
-        # gain: additive multiplicative gain per channel, 1 + U(-a, a).
-        gammas = (2.0 ** rng.uniform(-gamma_strength, gamma_strength, size=3)
-                  ).astype(np.float32)
-        gains = (1.0 + rng.uniform(-gain_strength, gain_strength, size=3)
-                 ).astype(np.float32)
-        orig = np.clip((orig ** gammas) * gains, 0.0, 1.0).astype(np.float32)
-        star = np.clip((star ** gammas) * gains, 0.0, 1.0).astype(np.float32)
+        # gamma: log-uniform stretch, 2^U(-g, g).
+        # gain: additive multiplicative gain, 1 + U(-a, a).
+        gamma = float(2.0 ** rng.uniform(-gamma_strength, gamma_strength))
+        gain = float(1.0 + rng.uniform(-gain_strength, gain_strength))
+        orig = np.clip((orig ** gamma) * gain, 0.0, 1.0).astype(np.float32)
+        star = np.clip((star ** gamma) * gain, 0.0, 1.0).astype(np.float32)
         return orig, star
 
     def _build_batch(self, rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:

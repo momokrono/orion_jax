@@ -62,11 +62,11 @@ def parse_training_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--augmentation-prob", type=float, default=None,
                         help="Probability of photometric jitter per patch (default 1.0).")
     parser.add_argument("--photo-gamma-strength", type=float, default=None,
-                        help="Half-width of per-channel log-uniform gamma stretch "
-                             "(default 0.7 -> 2^U(-0.7,0.7) per channel).")
+                        help="Half-width of global log-uniform gamma stretch "
+                             "(default 0.7 -> 2^U(-0.7,0.7), applied identically to R/G/B).")
     parser.add_argument("--photo-gain-strength", type=float, default=None,
-                        help="Half-width of per-channel additive multiplicative gain "
-                             "(default 0.2 -> U(0.8, 1.2) per channel).")
+                        help="Half-width of global additive multiplicative gain "
+                             "(default 0.2 -> U(0.8, 1.2), applied identically to R/G/B).")
     parser.add_argument("--continue-lr-scale", type=float, default=None,
                         help="Peak LR for the continuation schedule, as a fraction of "
                              "--lr (default 0.3). Only used with --continue-epochs.")
