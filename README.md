@@ -110,7 +110,7 @@ The network (see `network.py`):
 | `batch_size` | 8 | fits a 12 GB GPU in bf16; raise on larger cards |
 | `steps_per_epoch` | 250 | |
 | `val_steps` | 50 | |
-| `val_split` | 0.1 | image‑level train/val split (last 10% held out) when `val_data_dir == data_dir` |
+| `val_split` | 0.1 | image‑level train/val split when `val_data_dir == data_dir`. Split is **size‑based**: the smallest `val_split` fraction of images (by file size) is held out for validation, the largest kept for training — so train gets maximum variety |
 | `augmentation_prob` | 1.0 | per‑patch probability of photometric jitter; D4 orientation aug is always on for train regardless |
 | `photo_gamma_strength` | 0.7 | half‑width of global log‑uniform gamma stretch: `2^U(−g, g)` ≈ 0.62–1.62 (applied identically to R/G/B; per‑channel was tried and regressed quality) |
 | `photo_gain_strength` | 0.2 | half‑width of global additive multiplicative gain: `1 + U(−a, a)` ≈ 0.8–1.2 (R/G/B coupled) |
@@ -146,6 +146,7 @@ Defaults are `{"charbonnier": 1.0, "log_charbonnier": 1.0, "ssim": 1.0, "gradien
 `dataset.py` is pure numpy/cv2:
 - All compatible pairs are loaded into host memory once as float32 in [0, 1]
 - Each step samples an image (area‑weighted), a random crop, and optional augmentation
+- Train/val split is size‑based (smallest → val, largest → train) so train sees maximum pixel diversity; this also prevents patch‑level leakage between splits
 - Augmentation: a uniformly random D4 orientation (all 8 dihedral orientations) is always applied during training; `augmentation_prob` additionally gates per‑patch photometric jitter (on by default). Photometric jitter (gamma + gain) is applied **globally** — the same transform across R/G/B, identically to input and target. Per‑channel independence was tried and regressed held‑out quality (it breaks the spectral cues the model uses to tell emission nebulosity apart from stars); see `AstroDataset._photometric`
 - Plotting is headless (matplotlib `Agg` backend): `curves.png` and `sample_epoch_NNN.png` are written to disk without ever opening an interactive window, so the training loop never blocks
 - A background thread double‑buffers batches (`prefetch=2`) so the GPU is never starved

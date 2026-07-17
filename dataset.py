@@ -50,10 +50,18 @@ def load_images_to_memory(data_dir: str, patch_size: int, split: str = 'all',
                           val_split: float = 0.0) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """Loads original and starless image pairs as float32 numpy arrays.
 
-    When val_split > 0 and split is 'train' or 'val', the sorted image list is
-    partitioned deterministically: the last val_split fraction of images is held
-    out for validation, the rest used for training. This prevents patch-level
-    leakage between train and validation.
+    When val_split > 0 and split is 'train' or 'val', the image list is
+    partitioned deterministically by **file size** (ascending). The smallest
+    ``val_split`` fraction of images is held out for validation, the largest
+    kept for training. Biasing the largest, most varied images into train
+    gives the model more diversity to learn from; using the smallest as a
+    held-out checkpoint-selection signal keeps val cheap. This also prevents
+    patch-level leakage between train and validation.
+
+    File size on disk is used as the size proxy (it avoids decoding every
+    image just to compute the split). For a single-format dataset (e.g. all
+    uncompressed TIFFs) it's a near-perfect proxy for pixel count; for mixed
+    formats it can be inaccurate and you should pre-partition the data dir.
     """
     original_dir = os.path.join(data_dir, "original")
     starless_dir = os.path.join(data_dir, "starless")
@@ -73,11 +81,16 @@ def load_images_to_memory(data_dir: str, patch_size: int, split: str = 'all',
     if val_split > 0.0 and len(image_fnames) >= 2 and split in ('train', 'val'):
         total = len(image_fnames)
         n_val = max(1, round(total * val_split))
-        if split == 'train':
-            image_fnames = image_fnames[:total - n_val]
+        # Sort ascending by file size, smallest first. Ties fall back to the
+        # alphabetical order above (Python's sort is stable).
+        image_fnames.sort(key=lambda f: os.path.getsize(os.path.join(original_dir, f)))
+        if split == 'val':
+            selected = image_fnames[:n_val]              # the smallest n_val
         else:
-            image_fnames = image_fnames[total - n_val:]
-        print(f"[split={split}] using {len(image_fnames)}/{total} image pairs")
+            selected = image_fnames[n_val:]              # the rest (largest)
+        print(f"[split={split}] using {len(selected)}/{total} image pairs "
+              f"(size-based: {'smallest' if split == 'val' else 'largest'} -> this split)")
+        image_fnames = selected
 
     originals: List[np.ndarray] = []
     starlesses: List[np.ndarray] = []
