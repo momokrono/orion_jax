@@ -1,3 +1,7 @@
+import matplotlib
+matplotlib.use('Agg')  # Headless backend: plt.show() becomes a no-op so the
+                       # training loop never blocks on a GUI window. Figures are
+                       # still saved to disk via save_path.
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
@@ -122,4 +126,5 @@ def plot_training_curves(metrics_history: Dict[str, List[float]], show: bool = T
         fig.savefig(save_path)
     if show:
         plt.show()
+    plt.close(fig)
     return fig

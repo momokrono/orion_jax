@@ -14,7 +14,12 @@ def get_default_config() -> Dict[str, Any]:
         "steps_per_epoch": 250,
         "val_steps": 50,
         "val_split": 0.1,  # Fraction of images held out for validation (when val_data_dir == data_dir)
-        "augmentation_prob": 0.5,  # Per-patch probability of photometric (gamma/brightness) jitter; D4 orientation aug is always on for train
+        "augmentation_prob": 1.0,  # Per-patch probability of photometric jitter; defaults to 1.0 (always on). D4 orientation aug is always on for train regardless.
+        # Per-channel photometric jitter strengths (applied independently to R/G/B
+        # to simulate colour-balance / sensor-response variation). See
+        # AstroDataset._photometric for the exact formula.
+        "photo_gamma_strength": 0.7,  # half-width of log-uniform gamma: 2^U(-g, g) ~= 0.62..1.62 per channel
+        "photo_gain_strength": 0.2,   # half-width of additive gain: 1 + U(-a, a) ~= 0.8..1.2 per channel
         "prefetch": 2,
 
         # Model parameters

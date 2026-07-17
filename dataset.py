@@ -124,6 +124,12 @@ class AstroDataset:
         self.patch_size = int(config['patch_size'])
         self.batch_size = int(config['batch_size'])
         self.augmentation_prob = float(config.get('augmentation_prob', 0.0))
+        # Per-channel photometric jitter strengths. ``gamma_strength`` is the
+        # half-width of a log-uniform stretch (so 0.7 -> 2^U(-0.7,0.7) ~= 0.62..1.62
+        # per channel, drawn independently for R/G/B). ``gain_strength`` is the
+        # half-width of an additive multiplicative gain (0.2 -> U(0.8, 1.2)).
+        self.gamma_strength = float(config.get('photo_gamma_strength', 0.7))
+        self.gain_strength = float(config.get('photo_gain_strength', 0.2))
         self.prefetch = int(config.get('prefetch', 2))
         self.is_validation = (split == 'val')
         # Deterministic, reproducible crops for validation; fresh stream for train.
@@ -173,22 +179,36 @@ class AstroDataset:
             orig = np.ascontiguousarray(np.rot90(orig, k))
             star = np.ascontiguousarray(np.rot90(star, k))
 
-        # Photometric (gamma/brightness) jitter.
+        # Photometric (per-channel gamma/gain) jitter.
         if rng.random() < self.augmentation_prob:
-            orig, star = self._photometric(orig, star, rng)
+            orig, star = self._photometric(
+                orig, star, rng, self.gamma_strength, self.gain_strength,
+            )
 
         return np.clip(orig, 0.0, 1.0), np.clip(star, 0.0, 1.0)
 
     @staticmethod
     def _photometric(orig: np.ndarray, star: np.ndarray,
-                     rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
-        # Gamma: log-uniform stretch around 1.0 (~0.66 .. 1.52). Natural for
-        # astrophotography, which spans a huge dynamic range across stretches.
-        gamma = float(2.0 ** rng.uniform(-0.6, 0.6))
-        # Multiplicative brightness: simulates varying exposure levels.
-        brightness = float(rng.uniform(0.9, 1.1))
-        orig = np.clip(orig ** gamma * brightness, 0.0, 1.0).astype(np.float32)
-        star = np.clip(star ** gamma * brightness, 0.0, 1.0).astype(np.float32)
+                     rng: np.random.RandomState,
+                     gamma_strength: float, gain_strength: float
+                     ) -> Tuple[np.ndarray, np.ndarray]:
+        # Per-channel photometric jitter, applied identically to orig and star
+        # (same realization) so the input->target mapping stays consistent.
+        #
+        # Independently perturbing R, G, B simulates colour-balance / sensor
+        # response variation, which breaks channel-specific memorisation on a
+        # 4-image dataset. Doing it per-channel (vs the previous single global
+        # gamma) is the main lever for closing the train->val gap on the
+        # frequency loss, which otherwise memorises specific star fields.
+        #
+        # gamma: log-uniform stretch per channel, 2^U(-g, g).
+        # gain: additive multiplicative gain per channel, 1 + U(-a, a).
+        gammas = (2.0 ** rng.uniform(-gamma_strength, gamma_strength, size=3)
+                  ).astype(np.float32)
+        gains = (1.0 + rng.uniform(-gain_strength, gain_strength, size=3)
+                 ).astype(np.float32)
+        orig = np.clip((orig ** gammas) * gains, 0.0, 1.0).astype(np.float32)
+        star = np.clip((star ** gammas) * gains, 0.0, 1.0).astype(np.float32)
         return orig, star
 
     def _build_batch(self, rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:

@@ -90,7 +90,9 @@ The network (see `network.py`):
 | `steps_per_epoch` | 250 | |
 | `val_steps` | 50 | |
 | `val_split` | 0.1 | image‑level train/val split (last 10% held out) when `val_data_dir == data_dir` |
-| `augmentation_prob` | 0.5 | per‑patch probability of photometric (gamma/brightness) jitter; D4 orientation aug is always on for train |
+| `augmentation_prob` | 1.0 | per‑patch probability of photometric jitter; D4 orientation aug is always on for train regardless |
+| `photo_gamma_strength` | 0.7 | half‑width of per‑channel log‑uniform gamma stretch: `2^U(−g, g)` ≈ 0.62–1.62 per channel (R/G/B independent) |
+| `photo_gain_strength` | 0.2 | half‑width of per‑channel additive multiplicative gain: `1 + U(−a, a)` ≈ 0.8–1.2 per channel |
 | `epochs` | 10 | |
 | `lr` / `starting_lr` | 5e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
 | `warmup_epochs` | 1 | |
@@ -122,13 +124,15 @@ Defaults are `{"charbonnier": 1.0, "log_charbonnier": 1.0, "ssim": 1.0, "gradien
 `dataset.py` is pure numpy/cv2:
 - All compatible pairs are loaded into host memory once as float32 in [0, 1]
 - Each step samples an image (area‑weighted), a random crop, and optional augmentation
-- Augmentation: a uniformly random D4 orientation (all 8 dihedral orientations) is always applied during training; `augmentation_prob` additionally controls per‑patch gamma/brightness photometric jitter (applied identically to input and target, so the mapping stays consistent)
+- Augmentation: a uniformly random D4 orientation (all 8 dihedral orientations) is always applied during training; `augmentation_prob` additionally gates per‑patch photometric jitter (on by default). Photometric jitter is applied **per‑channel** (independent gamma + gain on R, G, B) and identically to input and target, so the input→target mapping stays consistent while simulating colour‑balance / sensor‑response variation
+- Plotting is headless (matplotlib `Agg` backend): `curves.png` and `sample_epoch_NNN.png` are written to disk without ever opening an interactive window, so the training loop never blocks
 - A background thread double‑buffers batches (`prefetch=2`) so the GPU is never starved
 - Validation uses a deterministic seed per dataset, so val metrics are comparable across epochs and runs
 
 
 ## Notes, tips, and troubleshooting
 - Mixed precision: training defaults to bf16 compute (`precision: "bf16"`) for speed and lower VRAM; pass `--precision fp32` for full precision. Some parameters (e.g. LayerNorm) are kept in float32 automatically.
+- Plotting: matplotlib is forced to the non‑interactive `Agg` backend, so figures are always saved to disk and never block the training loop on a GUI window. The legacy `--no-show` flag is now a no‑op (kept for backwards compatibility).
 - Learning rate: warmup‑cosine decay over `epochs * steps_per_epoch`, peaking at `lr` after `warmup_epochs`, decaying back to `starting_lr`. Requires `epochs > warmup_epochs`.
 - Checkpoint resume: on by default. Use a unique `--name` per configuration when comparing, or pass `--no-resume` to start fresh into the same dir.
 - Dataset quality: for best results provide carefully aligned pairs (original vs starless) with identical filenames and shapes.

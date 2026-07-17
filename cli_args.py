@@ -54,7 +54,13 @@ def parse_training_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--val-data-dir", type=str, default=None,
                         help="Validation data dir (defaults to --data-dir).")
     parser.add_argument("--augmentation-prob", type=float, default=None,
-                        help="Probability of geometric/color augmentation.")
+                        help="Probability of photometric jitter per patch (default 1.0).")
+    parser.add_argument("--photo-gamma-strength", type=float, default=None,
+                        help="Half-width of per-channel log-uniform gamma stretch "
+                             "(default 0.7 -> 2^U(-0.7,0.7) per channel).")
+    parser.add_argument("--photo-gain-strength", type=float, default=None,
+                        help="Half-width of per-channel additive multiplicative gain "
+                             "(default 0.2 -> U(0.8, 1.2) per channel).")
 
     # Model architecture
     parser.add_argument("--bottleneck-depth", type=int, default=None,
@@ -96,7 +102,8 @@ def apply_args_to_config(args, config):
         'batch_size', 'patch_size', 'bottleneck_depth', 'naf_expansion',
         'eval_every', 'visualize_every', 'plot_every', 'epoch_checkpoints',
     ]
-    _FLOAT_KEYS = ['lr', 'starting_lr', 'augmentation_prob']
+    _FLOAT_KEYS = ['lr', 'starting_lr', 'augmentation_prob',
+                   'photo_gamma_strength', 'photo_gain_strength']
     _STR_KEYS = ['data_dir', 'precision']
 
     for k in _INT_KEYS:
