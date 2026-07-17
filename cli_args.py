@@ -36,7 +36,13 @@ def parse_training_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--starting-lr", type=float, default=None,
                         help="Starting LR for warmup and final decay.")
     parser.add_argument("--epochs", type=int, default=None,
-                        help="Number of training epochs.")
+                        help="Number of training epochs (fresh run).")
+    parser.add_argument("--continue-epochs", type=int, default=None,
+                        help="Add N more epochs to an existing run in the same "
+                             "checkpoint dir. Builds a fresh cosine schedule with "
+                             "a re-heated peak (see --continue-lr-scale) decaying "
+                             "over exactly N epochs. Requires an existing latest/ "
+                             "checkpoint to resume from; incompatible with --epochs.")
     parser.add_argument("--warmup-epochs", type=int, default=None,
                         help="Warmup epochs before cosine decay.")
     parser.add_argument("--steps-per-epoch", type=int, default=None,
@@ -61,6 +67,9 @@ def parse_training_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--photo-gain-strength", type=float, default=None,
                         help="Half-width of per-channel additive multiplicative gain "
                              "(default 0.2 -> U(0.8, 1.2) per channel).")
+    parser.add_argument("--continue-lr-scale", type=float, default=None,
+                        help="Peak LR for the continuation schedule, as a fraction of "
+                             "--lr (default 0.3). Only used with --continue-epochs.")
 
     # Model architecture
     parser.add_argument("--bottleneck-depth", type=int, default=None,
@@ -103,7 +112,8 @@ def apply_args_to_config(args, config):
         'eval_every', 'visualize_every', 'plot_every', 'epoch_checkpoints',
     ]
     _FLOAT_KEYS = ['lr', 'starting_lr', 'augmentation_prob',
-                   'photo_gamma_strength', 'photo_gain_strength']
+                   'photo_gamma_strength', 'photo_gain_strength',
+                   'continue_lr_scale']
     _STR_KEYS = ['data_dir', 'precision']
 
     for k in _INT_KEYS:

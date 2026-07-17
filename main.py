@@ -31,7 +31,7 @@ from train import (
     create_optimizer,
     create_metrics, train_step, val_step, initialize_metrics_history,
 )
-from checkpoint import setup_checkpointing
+from checkpoint import setup_checkpointing, CheckpointManager
 from metrics_utils import format_metrics_for_history
 from utils import plot_images, plot_training_curves
 
@@ -74,6 +74,66 @@ def _save_history(run_dir: Path, metrics_history: dict, config: dict) -> None:
         'metrics': metrics_history,
     }
     _save_json(payload, run_dir / 'history.json')
+
+
+def _build_continuation_schedule(config: dict) -> optax.Schedule:
+    """Build the LR schedule for ``--continue-epochs``.
+
+    Peeks at the existing ``latest`` checkpoint to find the resume point
+    (``global_step`` / ``epoch``), then constructs a cosine schedule that
+    decays from a re-heated peak (``lr * continue_lr_scale``) down to
+    ``starting_lr`` over exactly ``continue_epochs * steps_per_epoch`` steps.
+    The schedule is offset by ``resume_step`` so that when the optimizer's
+    restored step counter ticks past the resume point, the cosine starts at
+    its peak.
+
+    Side effects:
+        - Updates ``config['epochs']`` to ``resume_epoch + 1 + continue_epochs``
+          so the training loop runs the extra epochs.
+        - Sets ``config['resume_from_checkpoint'] = True`` (required).
+
+    Returns:
+        The optax.Schedule to feed into ``create_optimizer``.
+    """
+    ckpt_dir = config['checkpoint_dir']
+    continue_epochs = int(config['continue_epochs'])
+    metadata = CheckpointManager(ckpt_dir).peek_metadata('latest')
+    if metadata is None:
+        raise SystemExit(
+            f"--continue-epochs: no 'latest' checkpoint found in {ckpt_dir}. "
+            f"Run a fresh training first, or pass --epochs instead."
+        )
+
+    resume_step = metadata['global_step']
+    resume_epoch = metadata['epoch']  # last completed epoch (0-indexed)
+    extra_steps = continue_epochs * config['steps_per_epoch']
+    reheated_peak = config['lr'] * config.get('continue_lr_scale', 0.3)
+
+    # Offset cosine: at step `s`, the cosine has progressed by max(s - resume_step, 0).
+    # So when the restored optimizer ticks past resume_step, the new cosine begins
+    # cleanly at its peak. warmup_steps=0 (no second warmup), init=peak so the
+    # schedule starts at full reheated_peak immediately.
+    inner = optax.warmup_cosine_decay_schedule(
+        init_value=reheated_peak,
+        peak_value=reheated_peak,
+        warmup_steps=0,
+        decay_steps=extra_steps,
+        end_value=config['starting_lr'],
+    )
+
+    def schedule(step):
+        return inner(jnp.maximum(step - resume_step, 0))
+
+    # Extend the loop so it runs `continue_epochs` more epochs past the resume point.
+    config['epochs'] = resume_epoch + 1 + continue_epochs
+    config['resume_from_checkpoint'] = True
+
+    print(f"[continue] resuming at global_step={resume_step} (epoch {resume_epoch}); "
+          f"adding {continue_epochs} epoch(s) = {extra_steps} steps; "
+          f"new total epochs = {config['epochs']}; "
+          f"continuation peak LR = {reheated_peak:.2e} "
+          f"({config.get('continue_lr_scale', 0.3)} x lr)")
+    return schedule
 
 
 def train_epoch(model, optimizer, train_metrics, train_dataset, config,
@@ -128,6 +188,22 @@ def main():
     args = parse_training_args()
     config = get_default_config()
     config = apply_args_to_config(args, config)
+
+    # --continue-epochs: extend an existing run by N more epochs with a fresh
+    # re-heated cosine schedule. Mutually exclusive with --epochs, and requires
+    # resume to be enabled (the whole point is to pick up an existing checkpoint).
+    if args.continue_epochs is not None:
+        if args.continue_epochs <= 0:
+            raise SystemExit(f"--continue-epochs must be positive, got {args.continue_epochs}")
+        if args.epochs is not None:
+            raise SystemExit("--continue-epochs is mutually exclusive with --epochs "
+                             "(--continue-epochs extends an existing run; --epochs sets "
+                             "the total for a fresh run).")
+        if args.no_resume:
+            raise SystemExit("--continue-epochs requires checkpoint resume; "
+                             "drop --no-resume.")
+        config['continue_epochs'] = int(args.continue_epochs)
+
     validate_config(config)
 
     run_dir = Path(config['checkpoint_dir'])
@@ -158,15 +234,18 @@ def main():
     )
 
     print("Initializing optimizer...")
-    warmup_steps = config['warmup_epochs'] * config['steps_per_epoch']
-    total_steps = config['epochs'] * config['steps_per_epoch']
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=config['starting_lr'],
-        peak_value=config['lr'],
-        warmup_steps=warmup_steps,
-        decay_steps=total_steps,
-        end_value=config['starting_lr'],
-    )
+    if 'continue_epochs' in config:
+        lr_schedule = _build_continuation_schedule(config)
+    else:
+        warmup_steps = config['warmup_epochs'] * config['steps_per_epoch']
+        total_steps = config['epochs'] * config['steps_per_epoch']
+        lr_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=config['starting_lr'],
+            peak_value=config['lr'],
+            warmup_steps=warmup_steps,
+            decay_steps=total_steps,
+            end_value=config['starting_lr'],
+        )
     optimizer = create_optimizer(model, config, lr_schedule)
 
     # Loss + metrics (Charbonnier + SSIM)

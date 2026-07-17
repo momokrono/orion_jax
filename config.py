@@ -39,6 +39,10 @@ def get_default_config() -> Dict[str, Any]:
         "starting_lr": 1e-6,
         "warmup_epochs": 1,
         "momentum": 0.9,
+        # Continuation (--continue-epochs): peak LR for the additional epochs,
+        # expressed as a fraction of `lr`. The cosine schedule decays from
+        # `lr * continue_lr_scale` to `starting_lr` over the extra epochs.
+        "continue_lr_scale": 0.3,
 
         # Loss configuration (weighted sum; see loss_functions.LOSS_FUNCTIONS).
         # log_charbonnier + gradient + frequency specifically strengthen the

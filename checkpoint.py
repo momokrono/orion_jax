@@ -149,6 +149,41 @@ class CheckpointManager:
             raise FileNotFoundError(f"Could not restore: {checkpoint_path}")
         nnx.update(model, restored['model'])
         return model
+
+    def peek_metadata(self, checkpoint_name: str = 'latest') -> Optional[Dict[str, Any]]:
+        """Read the scalar metadata of a checkpoint without loading weights.
+
+        Returns a dict with ``epoch``, ``global_step``, ``best_val_loss`` (the
+        scalar keys saved alongside the model/optimizer), or ``None`` if the
+        named checkpoint does not exist. Used by the ``--continue-epochs`` flow
+        to learn where to resume before constructing the LR schedule.
+        """
+        checkpoint_path = self.checkpoint_dir / checkpoint_name
+        if not checkpoint_path.exists():
+            return None
+
+        # Partial-restore only the scalar keys; the model/optimizer subtrees
+        # on disk are ignored.
+        from orbax.checkpoint._src.handlers.pytree_checkpoint_handler import (
+            PyTreeCheckpointHandler, PyTreeRestoreArgs,
+        )
+        checkpointer = ocp.Checkpointer(PyTreeCheckpointHandler())
+        target = {
+            'epoch': 0,
+            'global_step': 0,
+            'best_val_loss': float('inf'),
+        }
+        restored = checkpointer.restore(
+            checkpoint_path,
+            args=PyTreeRestoreArgs(item=target, partial_restore=True),
+        )
+        if restored is None:
+            return None
+        return {
+            'epoch': int(restored['epoch']),
+            'global_step': int(restored['global_step']),
+            'best_val_loss': float(restored['best_val_loss']),
+        }
     
     def save_best_model(self,
                        model: nnx.Module,

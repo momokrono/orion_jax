@@ -70,6 +70,27 @@ python compare_runs.py runs/baseline --out cmp.png        # save figure, no disp
 Overlays validation loss, loss components, and the learning‑rate schedule; prints a final summary table.
 
 
+## Continuing training (`--continue-epochs`)
+
+A finished run's cosine LR schedule ends at `starting_lr`, so simply re-running `main.py` in the same dir (or bumping `--epochs`) gives a sub-optimal LR curve — either stuck at the floor, or with a discontinuous jump back up to mid-cosine. `--continue-epochs N` is the proper way to add `N` more epochs to an existing run:
+
+```sh
+python main.py --name aug --continue-epochs 20
+```
+
+What it does:
+- Reads `<run_dir>/latest/` to find the resume point (`global_step`, last completed `epoch`) **before** building the optimizer, so the new schedule can be offset correctly.
+- Builds a fresh cosine schedule decaying from `lr * continue_lr_scale` (default `0.3`, so ~1.5e-4 at `lr=5e-4`) down to `starting_lr` over exactly `N * steps_per_epoch` steps. The schedule is offset by the resume `global_step` so the cosine begins at its peak the moment training resumes — no discontinuity.
+- Extends the training loop to `resume_epoch + 1 + N` total epochs.
+- Model + optimizer state (including Adam moments) and `best_val_loss` are restored as usual; the `best/` checkpoint tracking continues across the boundary.
+
+Constraints:
+- Mutually exclusive with `--epochs` (`--continue-epochs` extends; `--epochs` sets the total for a fresh run).
+- Requires checkpoint resume (don't combine with `--no-resume`).
+- Requires an existing `latest/` checkpoint in the run dir.
+- Tune the reheated peak via `--continue-lr-scale` (e.g. `--continue-lr-scale 0.1` for gentler fine-tuning, `0.5` for a stronger second pass).
+
+
 ## Model overview
 
 The network (see `network.py`):
@@ -96,6 +117,7 @@ The network (see `network.py`):
 | `epochs` | 10 | |
 | `lr` / `starting_lr` | 5e‑4 / 1e‑6 | peak and floor of the warmup‑cosine schedule |
 | `warmup_epochs` | 1 | |
+| `continue_lr_scale` | 0.3 | peak LR for `--continue-epochs`, as a fraction of `lr` (the cosine decays from `lr * continue_lr_scale` down to `starting_lr` over the extra epochs) |
 | `bottleneck_depth` | 2 | number of `HybridLayer`s in the bottleneck |
 | `naf_expansion` | 2 | hidden‑channel multiplier in `NAFBlock` |
 | `vit_mlp_dropout_rate` | 0.1 | dropout in ViT MLP |
